@@ -1,23 +1,32 @@
-# Tested with Python 3.7+ (Mac OS X)
+###########################################################################
+# Concurrent WSGI server - webserver3h.py                                 #
+#                                                                         #
+# Tested with Python 2.7.9 on Ubuntu 14.04 & Mac OS X                     #
+###########################################################################
 import errno
 import os
-import io
-import socket
 import signal
+import socket
 import sys
 
+from io import StringIO
 
-def child_reaper(signum, frame):
-    """
-    Wait for child processes to prevent zombies
-    """
+
+def grim_reaper(signum, frame):
     while True:
         try:
-            pid, status = os.waitpid(-1, os.WNOHANG)
+            pid, status = os.waitpid(
+                -1,          # Wait for any child process
+                os.WNOHANG  # Do not block and return EWOULDBLOCK error
+            )
+            # print(
+            #     'Child {pid} terminated with status {status}'
+            #     '\n'.format(pid=pid, status=status)
+            # )
         except OSError:
             return
 
-        if pid == 0:
+        if pid == 0:  # no more zombies
             return
 
 
@@ -46,21 +55,16 @@ class WSGIServer(object):
         # Return headers set by Web framework/Web application
         self.headers_set = []
 
-        signal.signal(signal.SIGCHLD, child_reaper)
-
     def set_app(self, application):
         self.application = application
 
     def serve_forever(self):
         listen_socket = self.listen_socket
-        clients = []
         while True:
             try:
-                # New client connection
                 self.client_connection, client_address = listen_socket.accept()
             except IOError as e:
                 code, msg = e.args
-
                 # restart 'accept' if it was interrupted
                 if code == errno.EINTR:
                     continue
@@ -68,21 +72,20 @@ class WSGIServer(object):
                     raise
 
             pid = os.fork()
-
-            if pid == 0:  # Child
-                listen_socket.close()
+            if pid == 0:  # child
+                listen_socket.close()  # close child copy
+                # Handle one request and close the client connection.
                 self.handle_one_request()
-                os._exit(0)  # Let the child process exit and tell the kernel it's done
-            else:  # Parent
-                self.client_connection.close()
-                # print(len(clients))
+                os._exit(0)
+            else:  # parent
+                self.client_connection.close()  # close parent copy
 
     def handle_one_request(self):
-        request_data = self.client_connection.recv(1024)
-        self.request_data = request_data = request_data.decode('utf-8')
+        self.request_data = request_data = self.client_connection.recv(1024)
         # Print formatted request data a la 'curl -v'
         print(''.join(
-            f'< {line}\n' for line in request_data.splitlines()
+            '< {line}\n'.format(line=line)
+            for line in request_data.splitlines()
         ))
 
         self.parse_request(request_data)
@@ -115,7 +118,7 @@ class WSGIServer(object):
         # Required WSGI variables
         env['wsgi.version'] = (1, 0)
         env['wsgi.url_scheme'] = 'http'
-        env['wsgi.input'] = io.StringIO(self.request_data)
+        env['wsgi.input'] = StringIO(self.request_data)
         env['wsgi.errors'] = sys.stderr
         env['wsgi.multithread'] = False
         env['wsgi.multiprocess'] = False
@@ -130,7 +133,7 @@ class WSGIServer(object):
     def start_response(self, status, response_headers, exc_info=None):
         # Add necessary server headers
         server_headers = [
-            ('Date', 'Mon, 15 Jul 2019 5:54:48 GMT'),
+            ('Date', 'Tue, 31 Mar 2015 12:54:48 GMT'),
             ('Server', 'WSGIServer 0.2'),
         ]
         self.headers_set = [status, response_headers + server_headers]
@@ -142,18 +145,18 @@ class WSGIServer(object):
     def finish_response(self, result):
         try:
             status, response_headers = self.headers_set
-            response = f'HTTP/1.1 {status}\r\n'
+            response = 'HTTP/1.1 {status}\r\n'.format(status=status)
             for header in response_headers:
                 response += '{0}: {1}\r\n'.format(*header)
             response += '\r\n'
             for data in result:
-                response += data.decode('utf-8')
+                response += data
             # Print formatted response data a la 'curl -v'
             print(''.join(
-                f'> {line}\n' for line in response.splitlines()
+                '> {line}\n'.format(line=line)
+                for line in response.splitlines()
             ))
-            response_bytes = response.encode()
-            self.client_connection.sendall(response_bytes)
+            self.client_connection.sendall(response)
         finally:
             self.client_connection.close()
 
@@ -162,6 +165,7 @@ SERVER_ADDRESS = (HOST, PORT) = '', 8888
 
 
 def make_server(server_address, application):
+    signal.signal(signal.SIGCHLD, grim_reaper)
     server = WSGIServer(server_address)
     server.set_app(application)
     return server
@@ -175,5 +179,5 @@ if __name__ == '__main__':
     module = __import__(module)
     application = getattr(module, application)
     httpd = make_server(SERVER_ADDRESS, application)
-    print(f'WSGIServer: Serving HTTP on port {PORT} ...\n')
+    print('WSGIServer: Serving HTTP on port {port} ...\n'.format(port=PORT))
     httpd.serve_forever()
